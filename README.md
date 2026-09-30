@@ -3,6 +3,15 @@
 Video/audio player built with Flutter. Playback runs on libmpv, driven from Rust
 through flutter_rust_bridge. See `CoreConcept.md` for the feature list.
 
+# Progress
+- CPU Rendering (In Progress)  
+- GPU Rendering (Not Yet)
+Linux (InProgress)
+MacOS (Not Yet)
+Windows (Not Yet)
+iOS (Not Yet)
+Android (Not Yet)
+
 ## How it fits together
 
 ```
