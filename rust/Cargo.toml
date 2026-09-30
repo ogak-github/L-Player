@@ -1,0 +1,21 @@
+[package]
+name = "lplayer_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.13.0"
+anyhow = "1"
+libc = "0.2"
+irondash_texture = "0.5"
+irondash_run_loop = "0.5"
+
+# Frame post-processing runs per pixel, keep our crate optimized even in debug builds.
+[profile.dev.package.lplayer_core]
+opt-level = 3
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
