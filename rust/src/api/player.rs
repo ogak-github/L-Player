@@ -1,36 +1,25 @@
-//! L-Player core: owns a libmpv instance, renders its video frames into a
-//! Flutter texture (software rendering + irondash_texture) and streams the
-//! playback state back to Dart.
+//! L-Player core: owns a libmpv instance, shows its video frames in a Flutter
+//! texture and streams the playback state back to Dart.
 //!
 //! Threads:
 //! - event thread: blocks on `mpv_wait_event`, keeps [`PlayerState`] up to date
 //!   and pushes [`PlayerEvent`]s to Dart.
-//! - render thread: woken by mpv's render update callback, renders the frame
-//!   into a pixel buffer and tells Flutter a new frame is available.
+//! - render thread: see [`crate::video`], renders frames on the GPU (Linux) or
+//!   CPU and tells Flutter a new frame is available.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{anyhow, bail, Result};
 use flutter_rust_bridge::frb;
 use irondash_run_loop::RunLoop;
-use irondash_texture::{
-    BoxedPixelData, PayloadProvider, PixelData, PixelDataProvider, PixelFormat, SendableTexture,
-    SimplePixelData, Texture,
-};
 
 use crate::frb_generated::StreamSink;
 use crate::mpv::*;
-
-/// Frames bigger than this are downscaled by mpv to keep the CPU copy cheap.
-const MAX_FRAME_WIDTH: f64 = 1920.0;
-const MAX_FRAME_HEIGHT: f64 = 1080.0;
-
-/// How many spare frame buffers the render thread keeps for reuse.
-const FRAME_POOL_SIZE: usize = 3;
+use crate::video::{MpvHandle, VideoOutput, VideoShared};
 
 #[frb(init)]
 pub fn init_app() {
@@ -122,8 +111,8 @@ pub struct PlayerEvent {
 #[frb(opaque)]
 pub struct LPlayer {
     inner: Arc<Inner>,
-    texture_id: i64,
-    threads: Mutex<Vec<JoinHandle<()>>>,
+    video: VideoOutput,
+    event_thread: Option<JoinHandle<()>>,
 }
 
 /// Creates the player and its video texture. `engine_handle` comes from
@@ -137,19 +126,12 @@ pub fn create_player(engine_handle: i64) -> Result<LPlayer> {
         libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr());
     });
     let mpv = Mpv::new()?;
-    let render_ctx = mpv.create_render_context()?;
-
-    // Flutter textures have to be created on the platform (main) thread.
-    let frames = Arc::new(FrameProvider::new());
-    let provider = frames.clone();
-    let (texture_id, texture) = main_thread
-        .send_and_wait(move || {
-            Texture::<BoxedPixelData>::new_with_provider(engine_handle, provider)
-                .map(|texture| (texture.id(), texture.into_sendable_texture()))
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e| anyhow!("failed to create video texture: {e}"))?;
-    let texture = MainThreadDrop::new(texture);
+    // `video` is stopped before `mpv` is destroyed, see `LPlayer::drop`.
+    let (mut video, hwdec) = VideoOutput::start(MpvHandle(mpv.0), engine_handle)?;
+    if let Err(e) = mpv.set_option("hwdec", hwdec) {
+        video.stop();
+        return Err(e);
+    }
 
     let inner = Arc::new(Inner {
         mpv,
@@ -158,30 +140,27 @@ pub fn create_player(engine_handle: i64) -> Result<LPlayer> {
         sink: Mutex::new(None),
         pending_subtitles: Mutex::new(Vec::new()),
         file_loaded: AtomicBool::new(false),
-        redraw: Mutex::new(false),
-        redraw_cv: Condvar::new(),
-        force_redraw: AtomicBool::new(false),
-        frames,
-        texture,
+        video: video.shared(),
     });
 
-    let render_thread = {
-        let inner = inner.clone();
-        std::thread::Builder::new()
-            .name("lplayer-render".into())
-            .spawn(move || render_loop(inner, render_ctx))?
-    };
     let event_thread = {
         let inner = inner.clone();
         std::thread::Builder::new()
             .name("lplayer-events".into())
-            .spawn(move || event_loop(inner))?
+            .spawn(move || event_loop(inner))
+    };
+    let event_thread = match event_thread {
+        Ok(thread) => thread,
+        Err(e) => {
+            video.stop();
+            return Err(e.into());
+        }
     };
 
     Ok(LPlayer {
         inner,
-        texture_id,
-        threads: Mutex::new(vec![render_thread, event_thread]),
+        video,
+        event_thread: Some(event_thread),
     })
 }
 
@@ -189,7 +168,7 @@ impl LPlayer {
     /// Id for Flutter's `Texture(textureId: ...)` widget.
     #[frb(sync, getter)]
     pub fn texture_id(&self) -> i64 {
-        self.texture_id
+        self.video.texture_id()
     }
 
     /// Stream of playback events. Emits the current state right away.
@@ -287,15 +266,14 @@ fn track_value(id: Option<i32>) -> String {
 
 impl Drop for LPlayer {
     fn drop(&mut self) {
+        // Frees mpv's render context, which has to happen while mpv is alive.
+        self.video.stop();
         self.inner.shutdown.store(true, Ordering::Release);
-        *self.inner.redraw.lock().unwrap() = true;
-        self.inner.redraw_cv.notify_all();
         unsafe { mpv_wakeup(self.inner.mpv.0) };
-        for thread in self.threads.get_mut().unwrap().drain(..) {
+        if let Some(thread) = self.event_thread.take() {
             let _ = thread.join();
         }
-        // mpv itself is destroyed when the last `Arc<Inner>` goes away, which
-        // happens after the render thread freed its render context.
+        // mpv itself is destroyed when the last `Arc<Inner>` goes away.
     }
 }
 
@@ -317,10 +295,10 @@ impl Mpv {
         }
         let mpv = Mpv(handle);
 
+        // `hwdec` is set once the renderer is known, see `create_player`.
         for (name, value) in [
             // Render through the render API instead of opening a window.
             ("vo", "libmpv"),
-            ("hwdec", "auto-copy"),
             ("idle", "yes"),
             ("keep-open", "no"),
             ("osc", "no"),
@@ -343,25 +321,6 @@ impl Mpv {
         Ok(mpv)
     }
 
-    fn create_render_context(&self) -> Result<RenderContext> {
-        let mut params = [
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_API_TYPE,
-                data: MPV_RENDER_API_TYPE_SW.as_ptr() as *mut c_void,
-            },
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_INVALID,
-                data: ptr::null_mut(),
-            },
-        ];
-        let mut ctx: *mut mpv_render_context = ptr::null_mut();
-        check(
-            unsafe { mpv_render_context_create(&mut ctx, self.0, params.as_mut_ptr()) },
-            "mpv_render_context_create",
-        )?;
-        Ok(RenderContext(ctx))
-    }
-
     fn set_option(&self, name: &str, value: &str) -> Result<()> {
         let c_name = CString::new(name)?;
         let c_value = CString::new(value)?;
@@ -376,65 +335,6 @@ impl Drop for Mpv {
     fn drop(&mut self) {
         unsafe { mpv_terminate_destroy(self.0) };
     }
-}
-
-/// Render context, only ever touched by the render thread after creation.
-/// Must be dropped before the [`Mpv`] it was created from.
-struct RenderContext(*mut mpv_render_context);
-
-unsafe impl Send for RenderContext {}
-
-impl Drop for RenderContext {
-    fn drop(&mut self) {
-        unsafe {
-            mpv_render_context_set_update_callback(self.0, None, ptr::null_mut());
-            mpv_render_context_free(self.0);
-        }
-    }
-}
-
-/// Drops the wrapped value on the platform thread. irondash textures panic
-/// when their last reference goes away on any other thread.
-struct MainThreadDrop<T: Send + 'static>(Option<T>);
-
-impl<T: Send + 'static> MainThreadDrop<T> {
-    fn new(value: T) -> Self {
-        Self(Some(value))
-    }
-}
-
-impl<T: Send + 'static> std::ops::Deref for MainThreadDrop<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        self.0.as_ref().expect("value is only taken on drop")
-    }
-}
-
-impl<T: Send + 'static> Drop for MainThreadDrop<T> {
-    fn drop(&mut self) {
-        let Some(value) = self.0.take() else {
-            return;
-        };
-        match RunLoop::sender_for_main_thread() {
-            Ok(sender) => sender.send(move || drop(value)),
-            // Leaking beats panicking while the engine is going away.
-            Err(_) => std::mem::forget(value),
-        }
-    }
-}
-
-fn check(code: c_int, what: &str) -> Result<()> {
-    if code < 0 {
-        bail!("{what}: {}", error_string(code));
-    }
-    Ok(())
-}
-
-fn error_string(code: c_int) -> String {
-    unsafe { CStr::from_ptr(mpv_error_string(code)) }
-        .to_string_lossy()
-        .into_owned()
 }
 
 const PROP_TIME_POS: u64 = 1;
@@ -482,13 +382,7 @@ struct Inner {
     /// External subtitles to add once the file being loaded is ready.
     pending_subtitles: Mutex<Vec<String>>,
     file_loaded: AtomicBool,
-    /// Set by mpv's update callback (or on shutdown) to wake the render thread.
-    redraw: Mutex<bool>,
-    redraw_cv: Condvar,
-    /// Render even if mpv reports no new frame, e.g. after the video size became known.
-    force_redraw: AtomicBool,
-    frames: Arc<FrameProvider>,
-    texture: MainThreadDrop<Arc<SendableTexture<BoxedPixelData>>>,
+    video: Arc<VideoShared>,
 }
 
 impl Inner {
@@ -599,14 +493,6 @@ impl Inner {
         }
     }
 
-    fn request_redraw(&self, force: bool) {
-        if force {
-            self.force_redraw.store(true, Ordering::Release);
-        }
-        *self.redraw.lock().unwrap() = true;
-        self.redraw_cv.notify_one();
-    }
-
     /// Applies an observed property change, returns false for unknown ids.
     fn apply_property(&self, id: u64, prop: &mpv_event_property) -> bool {
         let mut state = self.state.lock().unwrap();
@@ -628,9 +514,8 @@ impl Inner {
                 } else {
                     state.video_height = value;
                 }
-                drop(state);
-                // The first frame may have been skipped while the size was unknown.
-                self.request_redraw(true);
+                self.video
+                    .set_video_size(state.video_width, state.video_height);
             }
             PROP_MEDIA_TITLE => state.title = prop_string(prop).unwrap_or_default(),
             _ => return false,
@@ -717,190 +602,6 @@ fn event_loop(inner: Arc<Inner>) {
                 }
             }
             _ => {}
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Render thread
-// ---------------------------------------------------------------------------
-
-unsafe extern "C" fn on_render_update(ctx: *mut c_void) {
-    // Must not call into mpv here, just wake the render thread.
-    let inner = &*(ctx as *const Inner);
-    inner.request_redraw(false);
-}
-
-fn render_loop(inner: Arc<Inner>, ctx: RenderContext) {
-    let pixel_format: &CStr = match PixelData::FORMAT {
-        PixelFormat::RGBA => c"rgb0",
-        PixelFormat::BGRA => c"bgr0",
-    };
-    // `inner` outlives the callback: the context is dropped at the end of this
-    // function, before this thread lets go of its Arc.
-    unsafe {
-        mpv_render_context_set_update_callback(
-            ctx.0,
-            Some(on_render_update),
-            Arc::as_ptr(&inner) as *mut c_void,
-        )
-    };
-
-    let mut pool: Vec<Arc<Vec<u8>>> = Vec::new();
-    loop {
-        {
-            let mut redraw = inner.redraw.lock().unwrap();
-            while !*redraw {
-                redraw = inner.redraw_cv.wait(redraw).unwrap();
-            }
-            *redraw = false;
-        }
-        if inner.shutdown.load(Ordering::Acquire) {
-            break;
-        }
-
-        // Has to be called on every wakeup, even if we end up not rendering.
-        let flags = unsafe { mpv_render_context_update(ctx.0) };
-        let forced = inner.force_redraw.swap(false, Ordering::AcqRel);
-        if flags & MPV_RENDER_UPDATE_FRAME == 0 && !forced {
-            continue;
-        }
-
-        let size = {
-            let state = inner.state.lock().unwrap();
-            frame_size(state.video_width, state.video_height)
-        };
-        let Some((width, height)) = size else {
-            continue;
-        };
-
-        let mut buffer = take_buffer(&mut pool, (width * height * 4) as usize);
-        let pixels = Arc::get_mut(&mut buffer).expect("buffer from pool is unique");
-
-        let mut sw_size: [c_int; 2] = [width, height];
-        let mut stride: usize = width as usize * 4;
-        let mut params = [
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_SW_SIZE,
-                data: sw_size.as_mut_ptr() as *mut c_void,
-            },
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_SW_FORMAT,
-                data: pixel_format.as_ptr() as *mut c_void,
-            },
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_SW_STRIDE,
-                data: &mut stride as *mut usize as *mut c_void,
-            },
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_SW_POINTER,
-                data: pixels.as_mut_ptr() as *mut c_void,
-            },
-            mpv_render_param {
-                type_: MPV_RENDER_PARAM_INVALID,
-                data: ptr::null_mut(),
-            },
-        ];
-        if unsafe { mpv_render_context_render(ctx.0, params.as_mut_ptr()) } < 0 {
-            pool.push(buffer);
-            continue;
-        }
-
-        // "rgb0" leaves the 4th byte undefined, Flutter needs it opaque.
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel[3] = 255;
-        }
-
-        if let Some(previous) = inner.frames.publish(Frame {
-            width,
-            height,
-            data: buffer,
-        }) {
-            if pool.len() < FRAME_POOL_SIZE {
-                pool.push(previous);
-            }
-        }
-        inner.texture.mark_frame_available();
-    }
-
-    // Free the render context while `inner` (and with it mpv) is still alive.
-    drop(ctx);
-    drop(inner);
-}
-
-/// Size to render a `video_width`x`video_height` video at, or None if unknown.
-/// Width is kept a multiple of 16 so rows stay 64 byte aligned for mpv.
-fn frame_size(video_width: i32, video_height: i32) -> Option<(i32, i32)> {
-    if video_width <= 0 || video_height <= 0 {
-        return None;
-    }
-    let (w, h) = (video_width as f64, video_height as f64);
-    let scale = (MAX_FRAME_WIDTH / w).min(MAX_FRAME_HEIGHT / h).min(1.0);
-    let width = (((w * scale) as i32) / 16 * 16).max(16);
-    let height = ((h * scale).round() as i32).max(2);
-    Some((width, height))
-}
-
-/// Returns a buffer of `len` bytes nobody else references, reusing the pool when possible.
-fn take_buffer(pool: &mut Vec<Arc<Vec<u8>>>, len: usize) -> Arc<Vec<u8>> {
-    pool.retain(|buffer| buffer.len() == len);
-    match pool
-        .iter_mut()
-        .position(|buffer| Arc::get_mut(buffer).is_some())
-    {
-        Some(index) => pool.swap_remove(index),
-        None => Arc::new(vec![0; len]),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Texture payload
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct Frame {
-    width: i32,
-    height: i32,
-    data: Arc<Vec<u8>>,
-}
-
-impl PixelDataProvider for Frame {
-    fn get(&self) -> PixelData<'_> {
-        PixelData {
-            width: self.width,
-            height: self.height,
-            data: &self.data,
-        }
-    }
-}
-
-/// Hands the latest rendered frame to Flutter's raster thread.
-struct FrameProvider {
-    current: Mutex<Option<Frame>>,
-}
-
-impl FrameProvider {
-    fn new() -> Self {
-        Self {
-            current: Mutex::new(None),
-        }
-    }
-
-    /// Stores a new frame and returns the previous frame's buffer.
-    fn publish(&self, frame: Frame) -> Option<Arc<Vec<u8>>> {
-        self.current
-            .lock()
-            .unwrap()
-            .replace(frame)
-            .map(|previous| previous.data)
-    }
-}
-
-impl PayloadProvider<BoxedPixelData> for FrameProvider {
-    fn get_payload(&self) -> BoxedPixelData {
-        match self.current.lock().unwrap().as_ref() {
-            Some(frame) => Box::new(frame.clone()),
-            None => SimplePixelData::new_boxed(1, 1, vec![0, 0, 0, 255]),
         }
     }
 }

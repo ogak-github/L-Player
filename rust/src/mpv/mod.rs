@@ -3,7 +3,9 @@
 
 #![allow(non_camel_case_types, dead_code)]
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, CStr};
+
+use anyhow::{bail, Result};
 
 #[repr(C)]
 pub struct mpv_handle {
@@ -39,12 +41,18 @@ pub const MPV_END_FILE_REASON_ERROR: c_int = 4;
 // enum mpv_render_param_type
 pub const MPV_RENDER_PARAM_INVALID: c_int = 0;
 pub const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
+pub const MPV_RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
+pub const MPV_RENDER_PARAM_OPENGL_FBO: c_int = 3;
+pub const MPV_RENDER_PARAM_FLIP_Y: c_int = 4;
+pub const MPV_RENDER_PARAM_X11_DISPLAY: c_int = 8;
+pub const MPV_RENDER_PARAM_WL_DISPLAY: c_int = 9;
 pub const MPV_RENDER_PARAM_SW_SIZE: c_int = 17;
 pub const MPV_RENDER_PARAM_SW_FORMAT: c_int = 18;
 pub const MPV_RENDER_PARAM_SW_STRIDE: c_int = 19;
 pub const MPV_RENDER_PARAM_SW_POINTER: c_int = 20;
 
 pub const MPV_RENDER_API_TYPE_SW: &[u8] = b"sw\0";
+pub const MPV_RENDER_API_TYPE_OPENGL: &[u8] = b"opengl\0";
 
 // enum mpv_render_update_flag
 pub const MPV_RENDER_UPDATE_FRAME: u64 = 1 << 0;
@@ -76,6 +84,23 @@ pub struct mpv_event_end_file {
 pub struct mpv_render_param {
     pub type_: c_int,
     pub data: *mut c_void,
+}
+
+/// See mpv/render_gl.h.
+#[repr(C)]
+pub struct mpv_opengl_init_params {
+    pub get_proc_address:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, name: *const c_char) -> *mut c_void>,
+    pub get_proc_address_ctx: *mut c_void,
+}
+
+/// See mpv/render_gl.h.
+#[repr(C)]
+pub struct mpv_opengl_fbo {
+    pub fbo: c_int,
+    pub w: c_int,
+    pub h: c_int,
+    pub internal_format: c_int,
 }
 
 pub type mpv_render_update_fn = Option<unsafe extern "C" fn(cb_ctx: *mut c_void)>;
@@ -137,4 +162,19 @@ extern "C" {
         params: *mut mpv_render_param,
     ) -> c_int;
     pub fn mpv_render_context_free(ctx: *mut mpv_render_context);
+}
+
+/// Human readable message for an mpv error code.
+pub fn error_string(code: c_int) -> String {
+    unsafe { CStr::from_ptr(mpv_error_string(code)) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Turns a negative mpv error code into an error mentioning `what`.
+pub fn check(code: c_int, what: &str) -> Result<()> {
+    if code < 0 {
+        bail!("{what}: {}", error_string(code));
+    }
+    Ok(())
 }
