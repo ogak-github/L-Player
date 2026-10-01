@@ -38,8 +38,9 @@ pub struct PlayerState {
     pub idle: bool,
     /// True while a network stream is waiting for data.
     pub buffering: bool,
-    /// 0..=100
+    /// 0..=100, kept while muted so unmuting restores it.
     pub volume: f64,
+    pub muted: bool,
     pub speed: f64,
     pub subtitles_visible: bool,
     /// Display size of the video, 0 for audio only files.
@@ -81,6 +82,7 @@ impl Default for PlayerState {
             idle: true,
             buffering: false,
             volume: 100.0,
+            muted: false,
             speed: 1.0,
             subtitles_visible: true,
             video_width: 0,
@@ -228,6 +230,11 @@ impl LPlayer {
     }
 
     /// Playback speed, 1.0 is normal.
+    /// Mutes audio without touching the volume.
+    pub fn set_muted(&self, muted: bool) -> Result<()> {
+        self.inner.set_flag("mute", muted)
+    }
+
     pub fn set_speed(&self, speed: f64) -> Result<()> {
         self.inner.set_double("speed", speed.clamp(0.1, 8.0))
     }
@@ -352,6 +359,7 @@ const PROP_MEDIA_TITLE: u64 = 11;
 const PROP_TRACK_LIST: u64 = 12;
 const PROP_AID: u64 = 13;
 const PROP_SID: u64 = 14;
+const PROP_MUTE: u64 = 15;
 
 const OBSERVED_PROPERTIES: &[(u64, &CStr, c_int)] = &[
     (PROP_TIME_POS, c"time-pos", MPV_FORMAT_DOUBLE),
@@ -368,6 +376,7 @@ const OBSERVED_PROPERTIES: &[(u64, &CStr, c_int)] = &[
     (PROP_TRACK_LIST, c"track-list", MPV_FORMAT_NONE),
     (PROP_AID, c"aid", MPV_FORMAT_NONE),
     (PROP_SID, c"sid", MPV_FORMAT_NONE),
+    (PROP_MUTE, c"mute", MPV_FORMAT_FLAG),
 ];
 
 // ---------------------------------------------------------------------------
@@ -503,6 +512,7 @@ impl Inner {
             PROP_IDLE => state.idle = prop_flag(prop).unwrap_or(true),
             PROP_BUFFERING => state.buffering = prop_flag(prop).unwrap_or(false),
             PROP_VOLUME => state.volume = prop_double(prop).unwrap_or(state.volume),
+            PROP_MUTE => state.muted = prop_flag(prop).unwrap_or(state.muted),
             PROP_SPEED => state.speed = prop_double(prop).unwrap_or(state.speed),
             PROP_SUB_VISIBILITY => {
                 state.subtitles_visible = prop_flag(prop).unwrap_or(state.subtitles_visible)

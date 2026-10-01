@@ -338,7 +338,11 @@ class _Buttons extends StatelessWidget {
           onPressed: controller.toggleShuffle,
         ),
         const _Separator(),
-        _VolumeControl(controller: controller, volume: state?.volume ?? 100),
+        _VolumeControl(
+          controller: controller,
+          volume: state?.volume ?? 100,
+          muted: state?.muted ?? false,
+        ),
         const _Separator(),
         if (onTogglePlaylist != null)
           IconButton(
@@ -386,7 +390,7 @@ class _Secondary extends StatelessWidget {
           visualDensity: VisualDensity.compact,
         ),
       ),
-      // Covers PopupMenuButton icons and plain icons like the volume one.
+      // Covers PopupMenuButton icons and other plain icons.
       child: IconTheme.merge(
         data: IconThemeData(size: 20, color: color),
         child: DefaultTextStyle.merge(
@@ -498,26 +502,37 @@ class _SubtitleMenu extends StatelessWidget {
 }
 
 class _VolumeControl extends StatelessWidget {
-  const _VolumeControl({required this.controller, required this.volume});
+  const _VolumeControl({
+    required this.controller,
+    required this.volume,
+    required this.muted,
+  });
 
   final PlayerController controller;
   final double volume;
+  final bool muted;
 
   @override
   Widget build(BuildContext context) {
-    final icon = volume <= 0
+    // While muted the slider sits at 0, mpv still remembers the real volume.
+    final shown = muted ? 0.0 : volume;
+    final icon = shown <= 0
         ? Icons.volume_off_rounded
-        : volume < 50
+        : shown < 50
         ? Icons.volume_down_rounded
         : Icons.volume_up_rounded;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 20),
+        IconButton(
+          icon: Icon(icon, size: 20),
+          tooltip: muted ? 'Unmute' : 'Mute',
+          onPressed: controller.toggleMute,
+        ),
         SizedBox(
           width: 120,
           child: Slider(
-            value: volume.clamp(0.0, 100.0),
+            value: shown.clamp(0.0, 100.0),
             max: 100,
             onChanged: controller.setVolume,
           ),

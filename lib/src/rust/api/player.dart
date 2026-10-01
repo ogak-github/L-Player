@@ -7,9 +7,9 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `apply_property`, `check`, `command`, `create_render_context`, `emit`, `error_string`, `event_loop`, `frame_size`, `get_string`, `new`, `new`, `new`, `on_render_update`, `prop_double`, `prop_flag`, `prop_int64`, `prop_string`, `publish`, `refresh_tracks`, `render_loop`, `request_redraw`, `set_double`, `set_flag`, `set_option`, `set_string`, `take_buffer`, `track_value`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `FrameProvider`, `Frame`, `Inner`, `MainThreadDrop`, `Mpv`, `RenderContext`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `deref`, `drop`, `drop`, `drop`, `drop`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `get_payload`, `get`
+// These functions are ignored because they are not marked as `pub`: `apply_property`, `command`, `emit`, `event_loop`, `get_string`, `new`, `prop_double`, `prop_flag`, `prop_int64`, `prop_string`, `refresh_tracks`, `set_double`, `set_flag`, `set_option`, `set_string`, `track_value`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Inner`, `Mpv`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `drop`, `drop`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Creates the player and its video texture. `engine_handle` comes from
 /// `EngineContext.instance.getEngineHandle()` on the Dart side.
@@ -47,6 +47,9 @@ abstract class LPlayer implements RustOpaqueInterface {
   Future<void> selectSubtitleTrack({int? id});
 
   /// Playback speed, 1.0 is normal.
+  /// Mutes audio without touching the volume.
+  Future<void> setMuted({required bool muted});
+
   Future<void> setSpeed({required double speed});
 
   Future<void> setSubtitlesVisible({required bool visible});
@@ -157,8 +160,9 @@ class PlayerState {
   /// True while a network stream is waiting for data.
   final bool buffering;
 
-  /// 0..=100
+  /// 0..=100, kept while muted so unmuting restores it.
   final double volume;
+  final bool muted;
   final double speed;
   final bool subtitlesVisible;
 
@@ -177,6 +181,7 @@ class PlayerState {
     required this.idle,
     required this.buffering,
     required this.volume,
+    required this.muted,
     required this.speed,
     required this.subtitlesVisible,
     required this.videoWidth,
@@ -196,6 +201,7 @@ class PlayerState {
       idle.hashCode ^
       buffering.hashCode ^
       volume.hashCode ^
+      muted.hashCode ^
       speed.hashCode ^
       subtitlesVisible.hashCode ^
       videoWidth.hashCode ^
@@ -214,6 +220,7 @@ class PlayerState {
           idle == other.idle &&
           buffering == other.buffering &&
           volume == other.volume &&
+          muted == other.muted &&
           speed == other.speed &&
           subtitlesVisible == other.subtitlesVisible &&
           videoWidth == other.videoWidth &&

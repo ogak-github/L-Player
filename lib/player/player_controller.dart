@@ -12,6 +12,9 @@ import 'playlist.dart';
 const seekSteps = [10.0, 5.0, 2.0, 1.0, 0.5];
 const speedSteps = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0];
 
+/// Volume the mute button jumps to when the volume was dragged down to 0.
+const _unmuteVolume = 50.0;
+
 /// Glue between the Rust player and the playlist: auto advances on end of
 /// file, routes dropped files and exposes simple actions to the UI.
 class PlayerController extends ChangeNotifier {
@@ -115,8 +118,25 @@ class PlayerController extends ChangeNotifier {
   Future<void> seekBackward() =>
       _run(() => _player.seekBy(seconds: -_seekStep));
 
-  Future<void> setVolume(double volume) =>
-      _run(() => _player.setVolume(volume: volume));
+  /// Moving the volume above 0 also unmutes, like most players do.
+  Future<void> setVolume(double volume) => _run(() async {
+    await _player.setVolume(volume: volume);
+    if (volume > 0 && (state.value?.muted ?? false)) {
+      await _player.setMuted(muted: false);
+    }
+  });
+
+  /// mpv keeps the volume while muted, so unmuting brings it back as it was.
+  Future<void> toggleMute() {
+    final current = state.value;
+    if (current == null) return Future.value();
+    // Volume dragged down to 0 instead of muted: nothing to restore, so bring
+    // some sound back.
+    if (!current.muted && current.volume <= 0) {
+      return setVolume(_unmuteVolume);
+    }
+    return _run(() => _player.setMuted(muted: !current.muted));
+  }
 
   Future<void> setSpeed(double speed) =>
       _run(() => _player.setSpeed(speed: speed));

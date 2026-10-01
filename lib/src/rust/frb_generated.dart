@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1580660951;
+  int get rustContentHash => 1207301419;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -116,6 +116,11 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiPlayerLPlayerSelectSubtitleTrack({
     required LPlayer that,
     int? id,
+  });
+
+  Future<void> crateApiPlayerLPlayerSetMuted({
+    required LPlayer that,
+    required bool muted,
   });
 
   Future<void> crateApiPlayerLPlayerSetSpeed({
@@ -493,6 +498,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiPlayerLPlayerSetMuted({
+    required LPlayer that,
+    required bool muted,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLPlayer(
+            that,
+            serializer,
+          );
+          sse_encode_bool(muted, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiPlayerLPlayerSetMutedConstMeta,
+        argValues: [that, muted],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiPlayerLPlayerSetMutedConstMeta =>
+      const TaskConstMeta(
+        debugName: "LPlayer_set_muted",
+        argNames: ["that", "muted"],
+      );
+
+  @override
   Future<void> crateApiPlayerLPlayerSetSpeed({
     required LPlayer that,
     required double speed,
@@ -509,7 +552,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -547,7 +590,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -585,7 +628,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -619,7 +662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 14,
             port: port_,
           );
         },
@@ -647,7 +690,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_i_64,
@@ -676,7 +719,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -709,7 +752,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -739,7 +782,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -766,7 +809,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -939,8 +982,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PlayerState dco_decode_player_state(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return PlayerState(
       position: dco_decode_f_64(arr[0]),
       duration: dco_decode_f_64(arr[1]),
@@ -948,12 +991,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       idle: dco_decode_bool(arr[3]),
       buffering: dco_decode_bool(arr[4]),
       volume: dco_decode_f_64(arr[5]),
-      speed: dco_decode_f_64(arr[6]),
-      subtitlesVisible: dco_decode_bool(arr[7]),
-      videoWidth: dco_decode_i_32(arr[8]),
-      videoHeight: dco_decode_i_32(arr[9]),
-      title: dco_decode_String(arr[10]),
-      tracks: dco_decode_list_media_track(arr[11]),
+      muted: dco_decode_bool(arr[6]),
+      speed: dco_decode_f_64(arr[7]),
+      subtitlesVisible: dco_decode_bool(arr[8]),
+      videoWidth: dco_decode_i_32(arr[9]),
+      videoHeight: dco_decode_i_32(arr[10]),
+      title: dco_decode_String(arr[11]),
+      tracks: dco_decode_list_media_track(arr[12]),
     );
   }
 
@@ -1168,6 +1212,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_idle = sse_decode_bool(deserializer);
     var var_buffering = sse_decode_bool(deserializer);
     var var_volume = sse_decode_f_64(deserializer);
+    var var_muted = sse_decode_bool(deserializer);
     var var_speed = sse_decode_f_64(deserializer);
     var var_subtitlesVisible = sse_decode_bool(deserializer);
     var var_videoWidth = sse_decode_i_32(deserializer);
@@ -1181,6 +1226,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       idle: var_idle,
       buffering: var_buffering,
       volume: var_volume,
+      muted: var_muted,
       speed: var_speed,
       subtitlesVisible: var_subtitlesVisible,
       videoWidth: var_videoWidth,
@@ -1404,6 +1450,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.idle, serializer);
     sse_encode_bool(self.buffering, serializer);
     sse_encode_f_64(self.volume, serializer);
+    sse_encode_bool(self.muted, serializer);
     sse_encode_f_64(self.speed, serializer);
     sse_encode_bool(self.subtitlesVisible, serializer);
     sse_encode_i_32(self.videoWidth, serializer);
@@ -1497,6 +1544,10 @@ class LPlayerImpl extends RustOpaque implements LPlayer {
       .crateApiPlayerLPlayerSelectSubtitleTrack(that: this, id: id);
 
   /// Playback speed, 1.0 is normal.
+  /// Mutes audio without touching the volume.
+  Future<void> setMuted({required bool muted}) => RustLib.instance.api
+      .crateApiPlayerLPlayerSetMuted(that: this, muted: muted);
+
   Future<void> setSpeed({required double speed}) => RustLib.instance.api
       .crateApiPlayerLPlayerSetSpeed(that: this, speed: speed);
 
